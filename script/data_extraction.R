@@ -2,65 +2,7 @@ library(CytoML)
 library(flowCore)
 library(flowWorkspace)
 library(ggcyto)
-wsp_file <- "/public/users/xueyupeng/VZV/lvzhu/data/20260129/separate/20260129_separate.wsp"
-fcs_path <- "/public/users/xueyupeng//VZV/lvzhu/data/20260129/separate/"
-
-ws <- open_flowjo_xml(wsp_file)
-gs <- flowjo_to_gatingset(
-  ws = ws,
-  path = fcs_path,
-  name = "All Samples",
-  truncate_max_range = FALSE
-)
-
-fr <- gs_pop_get_data(gs[[1]], "root")[[1]]
-
-param <- pData(parameters(fr))
-
-# 标记和通道
-markers <- param$desc
-channels <- param$name
-
-# 过滤掉非生物marker
-keep <- !grepl("Time|Event|DNA|Residual|Offset|Center", markers)
-
-expr <- exprs(fr)[, channels[keep]]
-colnames(expr) <- markers[keep]
-
-pdf("/public/users/xueyupeng/VZV/lvzhu/sample1_marker_distribution.pdf", width = 12, height = 8)
-
-chs <- colnames(expr)
-
-for (i in seq(1, length(chs), by = 16)) {
-  
-  par(mfrow = c(4, 4), mar = c(2,2,2,1))
-  
-  subset_ch <- chs[i:min(i+15, length(chs))]
-  
-  for (ch in subset_ch) {
-    hist(expr[, ch],
-         main = ch,
-         xlab = "",
-         breaks = 100,
-         col = "grey")
-  }
-}
-
-dev.off()
-
-
-ggcyto(gs[[1]],
-       aes(x = `CD3_113In`, y = `CD19_174Yb`),
-       subset = "root") +
-  geom_hex(bins = 128) +
-  geom_gate() +
-  geom_stats() +
-  theme_bw()
-
-stats <- gs_pop_get_count_fast(gs)
-head(stats)
-
-gs_get_pop_paths(gs)
+library(dplyr)
 
 # 导出wsp中所有fcs的特定gating的数据
 export_gate_fcs <- function(gs,
@@ -70,13 +12,12 @@ export_gate_fcs <- function(gs,
                             prefix = NULL,
                             verbose = TRUE) {
   
-  # 👉 取最后一层作为目录名
-  gate_name_clean <- basename(target_gate)
+  library(flowCore)
   
-  # 👉 进一步清理非法字符（空格、逗号等）
+  # ===== 目录名处理 =====
+  gate_name_clean <- basename(target_gate)
   gate_name_clean <- gsub("[^[:alnum:]_]+", "_", gate_name_clean)
   
-  # 输出目录
   output_dir <- file.path(output_base, gate_name_clean)
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
   
@@ -87,35 +28,63 @@ export_gate_fcs <- function(gs,
     cat("Output dir:", output_dir, "\n")
   }
   
-  for (s in samples) {
+  # ===== 主循环 =====
+  for (i in seq_along(samples)) {
     
-    if (verbose) cat("Processing:", s, "\n")
-    
+    s <- samples[i]
     tryCatch({
       
+      # 1️⃣ 取数据
       fr <- gs_pop_get_data(
         gs[[s]],
         target_gate,
         inverse.transform = use_raw
       )[[1]]
       
-      fname <- if (!is.null(prefix)) {
-        paste0(prefix, "_", s, ".fcs")
+      # 2️⃣ 从 FCS header 获取原始文件名（关键）
+      key <- keyword(fr)
+      
+      orig_name <- if (!is.null(key$FILENAME)) {
+        key$FILENAME
+      } else if (!is.null(key$`$FIL`)) {
+        key$`$FIL`
       } else {
-        paste0(s, ".fcs")
+        s  # fallback
+      }
+      orig_name <- basename(orig_name)
+      # 3️⃣ 清理文件名（防止非法字符）
+      orig_name <- gsub("[/:*?\"<>| ]+", "_", orig_name)
+      
+      # 4️⃣ 加 prefix（如果需要）
+      fname <- if (!is.null(prefix)) {
+        paste0(prefix, "_", orig_name)
+      } else {
+        orig_name
       }
       
+      # 5️⃣ 保证 .fcs 后缀
+      if (!grepl("\\.fcs$", fname, ignore.case = TRUE)) {
+        fname <- paste0(fname, ".fcs")
+      }
+      
+      # 6️⃣ 输出路径
       out_file <- file.path(output_dir, fname)
       
+      # 7️⃣ 写文件
       write.FCS(fr, filename = out_file)
       
+      if (verbose) {
+        cat("✔ Saved:", fname, "\n")
+      }
+      
     }, error = function(e) {
-      cat("❌ Skip:", s, "|", e$message, "\n")
+      cat("❌ Skip sample:", s, "|", e$message, "\n")
     })
   }
   
   if (verbose) cat("Done!\n")
 }
+
 
 gates <- c("/B", "/B/Plasmablast","/nonTB/CD56-HLADR+/Classical_Mono",
            "/nonTB/CD56-HLADR+/Intermediate_Mono","/nonTB/CD56-HLADR+/Non-classical_Mono",
@@ -129,15 +98,224 @@ gates <- c("/B", "/B/Plasmablast","/nonTB/CD56-HLADR+/Classical_Mono",
            "/Toltal T/T/CD8T/CD8TEM","/Toltal T/T/CD8T/CD8TN"
           )
 
-for (g in gates) {
-  export_gate_fcs(gs, g,
-                  output_base = "/public/users/xueyupeng/VZV/lvzhu/subtype",
-                  use_raw = FALSE)
+
+base_dir <- "/public/users/xueyupeng/VZV/lvzhu/data/"
+
+# ===== 递归找所有 wsp =====
+wsp_files <- list.files(
+  base_dir,
+  pattern = "\\.wsp$",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+# 👉 只保留 separate 目录
+wsp_files <- wsp_files[grepl("/separate/", wsp_files)]
+
+# 👉 去掉包含“副本”的文件
+wsp_files <- wsp_files[!grepl("副本", basename(wsp_files))]
+
+wsp_files
+
+# ===== 2. 逐个 WSP 处理 =====
+for (wsp_file in wsp_files) {
+  
+  cat("\n====================\n")
+  cat("Processing:", wsp_file, "\n")
+  
+  tryCatch({
+    
+    fcs_path <- dirname(wsp_file)
+    
+    ws <- open_flowjo_xml(wsp_file)
+    
+    gs <- flowjo_to_gatingset(
+      ws = ws,
+      path = fcs_path,
+      name = "All Samples",
+      truncate_max_range = FALSE
+    )
+    
+    for (g in gates) {
+      
+      export_gate_fcs(
+        gs,
+        target_gate = g,
+        output_base = "/public/users/xueyupeng/VZV/lvzhu/subtype",
+        use_raw = FALSE
+      )
+    }
+    
+    cat("✔ Done:", wsp_file, "\n")
+    
+  }, error = function(e) {
+    cat("❌ Failed:", wsp_file, "|", e$message, "\n")
+  })
 }
 
-for (g in gates) {
-  export_gate_fcs(gs, g,
-                  output_base = "/public/users/xueyupeng/VZV/lvzhu/subtype_raw",
-                  use_raw = TRUE)
+
+
+
+
+for (wsp_file in wsp_files) {
+  
+  cat("\n====================\n")
+  cat("Processing:", wsp_file, "\n")
+  
+  tryCatch({
+    
+    fcs_path <- dirname(wsp_file)
+    
+    ws <- open_flowjo_xml(wsp_file)
+    
+    gs <- flowjo_to_gatingset(
+      ws = ws,
+      path = fcs_path,
+      name = "All Samples",
+      truncate_max_range = FALSE
+    )
+    
+    for (g in gates) {
+      
+      export_gate_fcs(
+        gs,
+        target_gate = g,
+        output_base = "/public/users/xueyupeng/VZV/lvzhu/subtype_raw",
+        use_raw = T
+      )
+    }
+    
+    cat("✔ Done:", wsp_file, "\n")
+    
+  }, error = function(e) {
+    cat("❌ Failed:", wsp_file, "|", e$message, "\n")
+  })
 }
+
+
+
+
+
+
+all_stats <- list()
+
+for (wsp_file in wsp_files) {
+  
+  cat("\n====================\n")
+  cat("Processing:", wsp_file, "\n")
+  
+  tryCatch({
+    
+    fcs_path <- dirname(wsp_file)
+    
+    ws <- open_flowjo_xml(wsp_file)
+    
+    gs <- flowjo_to_gatingset(
+      ws = ws,
+      path = fcs_path,
+      name = "All Samples",
+      truncate_max_range = FALSE
+    )
+    
+    # ===== 1️⃣ count =====
+    stats <- gs_pop_get_count_fast(gs)
+    
+    # ===== 2️⃣ 基本信息 =====
+    pdata <- pData(gs)
+    
+    samples <- sampleNames(gs)
+    
+    # ===== 2️⃣ 提取 FILENAME（核心）=====
+    file_map <- data.frame(
+      name = samples,
+      FILENAME = NA_character_,
+      stringsAsFactors = FALSE
+    )
+    
+    for (i in seq_along(samples)) {
+      
+      s <- samples[i]
+      
+      fr <- gs_pop_get_data(gs[[s]], "root")[[1]]
+      key <- keyword(fr)
+      
+      orig_name <- if (!is.null(key$FILENAME)) {
+        key$FILENAME
+      } else if (!is.null(key$`$FIL`)) {
+        key$`$FIL`
+      } else {
+        s
+      }
+      
+      # 👉 只保留文件名（去路径）
+      orig_name <- basename(orig_name)
+      
+      file_map$FILENAME[i] <- orig_name
+    }
+    
+    # ===== 3️⃣ 合并 FILENAME =====
+    stats <- left_join(stats, file_map, by = "name")
+    
+    stats <- stats %>%
+      mutate(root_count = as.numeric(sub(".*_", "", name)))
+    
+    # ===== 6️⃣ 比例计算 =====
+    stats$percent_of_parent <- stats$Count / stats$ParentCount
+    stats$percent_of_root   <- stats$Count / stats$root_count
+    
+    # ===== 8️⃣ 加来源（可选）=====
+    stats$wsp <- basename(wsp_file)
+    
+    all_stats[[wsp_file]] <- stats
+    
+    cat("✔ Done:", wsp_file, "\n")
+    
+  }, error = function(e) {
+    cat("❌ Failed:", wsp_file, "|", e$message, "\n")
+  })
+}
+
+# ===== 合并所有 =====
+final_stats <- bind_rows(all_stats)
+
+
+
+library(dplyr)
+library(stringr)
+
+final_stats <- final_stats %>%
+  mutate(
+    # 1. 按 "-" 拆
+    part1 = str_split(FILENAME, "-", simplify = TRUE)[,1],
+    part2 = str_split(FILENAME, "-", simplify = TRUE)[,2],
+    part3 = str_split(FILENAME, "-", simplify = TRUE)[,3],
+    
+    # 2. 拆 part2: V0_20260129
+    Timepoint = str_split(part2, "_", simplify = TRUE)[,1],
+    Exp_id    = str_split(part2, "_", simplify = TRUE)[,2],
+    
+    # 3. 写字段
+    Participant   = part1,
+    Exp_position  = part3
+  ) %>%
+  select(-part1, -part2, -part3)
+
+final_stats <- final_stats %>%
+  mutate(
+    Timepoint_V = recode(
+      Timepoint,
+      "V0" = "V1Day0", "V6" = "V1Day0",
+      "V1" = "V1Day1", "V7" = "V1Day1",
+      "V3" = "V2Day0", "V8" = "V2Day0",
+      "V4" = "V2Day1", "V9" = "V2Day1",
+      .default = NA_character_
+    )
+  )
+
+# ===== 保存 =====
+write.csv(
+  final_stats,
+  "/public/users/xueyupeng/VZV/lvzhu/mid_data/gating_stats.csv",
+  row.names = FALSE
+)
 
