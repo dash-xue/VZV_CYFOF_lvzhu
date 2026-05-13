@@ -99,7 +99,7 @@ gates <- c("/B", "/B/Plasmablast","/nonTB/CD56-HLADR+/Classical_Mono",
           )
 
 
-base_dir <- "/public/users/xueyupeng/VZV/lvzhu/data/"
+base_dir <- "/public/users/xueyupeng/VZV/cytof/data"
 
 # ===== 递归找所有 wsp =====
 wsp_files <- list.files(
@@ -111,6 +111,9 @@ wsp_files <- list.files(
 
 # 👉 只保留 separate 目录
 wsp_files <- wsp_files[grepl("/separate/", wsp_files)]
+
+wsp_files <- wsp_files[grepl("-2.wsp", basename(wsp_files))]
+
 
 # 👉 去掉包含“副本”的文件
 wsp_files <- wsp_files[!grepl("副本", basename(wsp_files))]
@@ -141,7 +144,7 @@ for (wsp_file in wsp_files) {
       export_gate_fcs(
         gs,
         target_gate = g,
-        output_base = "/public/users/xueyupeng/VZV/lvzhu/subtype",
+        output_base = "/public/users/xueyupeng/VZV/cytof/subtype",
         use_raw = FALSE
       )
     }
@@ -180,7 +183,7 @@ for (wsp_file in wsp_files) {
       export_gate_fcs(
         gs,
         target_gate = g,
-        output_base = "/public/users/xueyupeng/VZV/lvzhu/subtype_raw",
+        output_base = "/public/users/xueyupeng/VZV/cytof/subtype_raw",
         use_raw = T
       )
     }
@@ -291,14 +294,36 @@ final_stats <- final_stats %>%
     part3 = str_split(FILENAME, "-", simplify = TRUE)[,3],
     
     # 2. 拆 part2: V0_20260129
-    Timepoint = str_split(part2, "_", simplify = TRUE)[,1],
+    #Timepoint = str_split(part2, "_", simplify = TRUE)[,1],
+    #Exp_id    = str_split(part2, "_", simplify = TRUE)[,2],
+    
+    Participant = str_split(part2, "_", simplify = TRUE)[,1],
     Exp_id    = str_split(part2, "_", simplify = TRUE)[,2],
     
     # 3. 写字段
-    Participant   = part1,
-    Exp_position  = part3
+    #Participant   = part1,
+    #Exp_position  = part3
+    
+    Timepoint = part1,
+    Exp_position = part3
   ) %>%
-  select(-part1, -part2, -part3)
+  dplyr::select(-part1, -part2, -part3)
+
+
+final_stats <- final_stats %>%
+  mutate(
+    Group = case_when(
+      str_starts(Participant, "L") ~ "L",
+      str_starts(Participant, "G") ~ "G",
+      str_starts(Participant, "A") ~ "A",
+      TRUE ~ NA_character_
+    )
+  )
+
+table(final_stats$Participant,final_stats$Timepoint)
+
+final_stats <- final_stats[!final_stats$Participant %in% c("L206", "L119"), ]
+
 
 final_stats <- final_stats %>%
   mutate(
@@ -312,10 +337,39 @@ final_stats <- final_stats %>%
     )
   )
 
+
+final_stats <- final_stats %>%
+  mutate(
+    Time_V = case_when(
+      
+      # ===== Group G =====
+      Group == "G" & Timepoint == "V1" ~ "V1Day0",
+      Group == "G" & Timepoint == "V2" ~ "V1Day1",
+      
+      # ===== Group L =====
+      Group == "L" & Timepoint == "V0" ~ "V1Day0",
+      Group == "L" & Timepoint == "V1" ~ "V1Day1",
+      Group == "L" & Timepoint == "V5" ~ "V2Day0",
+      Group == "L" & Timepoint == "V6" ~ "V2Day1",
+      
+      Group == "A" & Timepoint == "V0" ~ "V1Day0",
+      Group == "A" & Timepoint == "V1" ~ "V1Day1",
+      Group == "A" & Timepoint == "V3" ~ "V2Day0",
+      Group == "A" & Timepoint == "V4" ~ "V2Day1",
+      
+      Group == "A" & Timepoint == "V6" ~ "V1Day0",
+      Group == "A" & Timepoint == "V7" ~ "V1Day1",
+      Group == "A" & Timepoint == "V8" ~ "V2Day0",
+      Group == "A" & Timepoint == "V9" ~ "V2Day1",
+      # ===== fallback =====
+      TRUE ~ NA_character_
+    )
+  )
+
 # ===== 保存 =====
 write.csv(
   final_stats,
-  "/public/users/xueyupeng/VZV/lvzhu/mid_data/gating_stats.csv",
+  "/public/users/xueyupeng/VZV/cytof/mid_data/gating_stats.csv",
   row.names = FALSE
 )
 
